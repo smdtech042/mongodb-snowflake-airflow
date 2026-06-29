@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta
 
 from airflow.decorators import dag, task
-from airflow.providers.mongo.hooks.mongo import MongoHook
+from airflow.hooks.base import BaseHook
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 
 # Ensure the include directory is in the import path
@@ -30,7 +30,7 @@ default_args = {
     dag_id='metadata_sync',
     default_args=default_args,
     description='Logs and audits pipeline metadata and sync stats in Snowflake',
-    schedule_interval='@daily',
+    schedule='@daily',
     start_date=datetime(2026, 1, 1),
     catchup=False,
     tags=['metadata', 'audit', 'snowflake'],
@@ -43,6 +43,30 @@ default_args = {
     }
 )
 def metadata_sync_dag():
+
+    def get_mongo_client(mongo_conn_id):
+        from pymongo import MongoClient
+
+        conn = BaseHook.get_connection(mongo_conn_id)
+        extra = conn.extra_dejson or {}
+
+        if conn.host:
+            host = conn.host
+            if conn.port:
+                host = f"{host}:{conn.port}"
+            if conn.login and conn.password:
+                uri = f"mongodb://{conn.login}:{conn.password}@{host}"
+            elif conn.login:
+                uri = f"mongodb://{conn.login}@{host}"
+            else:
+                uri = f"mongodb://{host}"
+        else:
+            uri = extra.get("uri") or extra.get("connection_string")
+
+        if not uri:
+            raise ValueError(f"Mongo connection '{mongo_conn_id}' is missing host/URI details")
+
+        return MongoClient(uri)
 
     @task(task_id="setup_metadata_table")
     def setup_metadata_table(**context):
@@ -84,9 +108,9 @@ def metadata_sync_dag():
         mongo_db = params['mongo_db_name']
         run_id = context['run_id']
 
-        mongo_hook = MongoHook(mongo_conn_id=mongo_conn)
+        mongo_hook = get_mongo_client(mongo_conn)
         sf_hook = SnowflakeHook(snowflake_conn_id=sf_conn)
-        client = mongo_hook.get_conn()
+        client = mongo_hook
         db = client[mongo_db]
 
         insert_values = []

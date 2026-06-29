@@ -7,7 +7,7 @@ import tempfile
 
 from airflow.decorators import dag, task
 from airflow.utils.task_group import TaskGroup
-from airflow.providers.mongo.hooks.mongo import MongoHook
+from airflow.hooks.base import BaseHook
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 
 # Ensure the include directory is in the import path
@@ -61,11 +61,37 @@ def to_snake_case(camel_str):
         snake = snake[1:]
     return snake
 
+
+def get_mongo_client(mongo_conn_id):
+    """Build a MongoDB client from the configured Airflow connection."""
+    from pymongo import MongoClient
+
+    conn = BaseHook.get_connection(mongo_conn_id)
+    extra = conn.extra_dejson or {}
+
+    if conn.host:
+        host = conn.host
+        if conn.port:
+            host = f"{host}:{conn.port}"
+        if conn.login and conn.password:
+            uri = f"mongodb://{conn.login}:{conn.password}@{host}"
+        elif conn.login:
+            uri = f"mongodb://{conn.login}@{host}"
+        else:
+            uri = f"mongodb://{host}"
+    else:
+        uri = extra.get("uri") or extra.get("connection_string")
+
+    if not uri:
+        raise ValueError(f"Mongo connection '{mongo_conn_id}' is missing host/URI details")
+
+    return MongoClient(uri)
+
 @dag(
     dag_id='mongodb_to_snowflake',
     default_args=default_args,
     description='ELT pipeline to migrate MongoDB data to Snowflake',
-    schedule_interval='@daily',
+    schedule='@daily',
     start_date=datetime(2026, 1, 1),
     catchup=False,
     tags=['mongodb', 'snowflake', 'elt'],
@@ -122,8 +148,7 @@ def mongodb_to_snowflake_etl():
 
             # 1. Extract from MongoDB and write to local JSONL
             logger.info(f"Connecting to MongoDB and fetching from collection '{collection}'...")
-            mongo_hook = MongoHook(mongo_conn_id=mongo_conn)
-            client = mongo_hook.get_conn()
+            client = get_mongo_client(mongo_conn)
             db = client[mongo_db]
             cursor = db[collection].find()
 
