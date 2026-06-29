@@ -106,8 +106,8 @@ def get_mongo_client(mongo_conn_id):
     catchup=False,
     tags=["mongodb", "snowflake", "elt"],
     params={
-        "mongo_conn_id": "mongo_default",
-        "snowflake_conn_id": "snowflake_default",
+        "mongo_conn_id": "mongo_conn_id",
+        "snowflake_conn_id": "snowflake_conn_id",
         "snowflake_database": "MONGODB_RAW",
         "snowflake_schema": "PUBLIC",
         "snowflake_warehouse": "COMPUTE_WH",

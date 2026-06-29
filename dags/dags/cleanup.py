@@ -37,7 +37,7 @@ default_args = {
     catchup=False,
     tags=["cleanup", "maintenance", "snowflake"],
     params={
-        "snowflake_conn_id": "snowflake_default",
+        "snowflake_conn_id": "snowflake_conn_id",
         "snowflake_database": "MONGODB_RAW",
         "snowflake_schema": "PUBLIC",
     },

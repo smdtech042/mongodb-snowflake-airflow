@@ -38,8 +38,8 @@ default_args = {
     catchup=False,
     tags=["metadata", "audit", "snowflake"],
     params={
-        "mongo_conn_id": "mongo_default",
-        "snowflake_conn_id": "snowflake_default",
+        "mongo_conn_id": "mongo_conn_id",
+        "snowflake_conn_id": "snowflake_conn_id",
         "snowflake_database": "MONGODB_RAW",
         "snowflake_schema": "PUBLIC",
         "mongo_db_name": MONGO_DATABASE,
