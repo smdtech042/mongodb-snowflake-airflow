@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 @dag(
     dag_id="test_mongo_connection",
-    schedule_interval=None,
+    schedule=None,
     start_date=datetime(2026, 1, 1),
     catchup=False,
     default_args={"retries": 0},
