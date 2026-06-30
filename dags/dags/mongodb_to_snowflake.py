@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import logging
@@ -95,6 +96,33 @@ def get_mongo_client(mongo_conn_id):
         )
 
     return MongoClient(uri)
+
+
+def resolve_collection_plan(mongo_conn_id, mongo_db_name, configured_mappings):
+    """Return the collection plan to process.
+
+    If the repo has explicit schema mappings, use them. Otherwise, discover
+    collection names from MongoDB and build a default mapping for each one.
+    """
+    if configured_mappings:
+        return configured_mappings
+
+    client = get_mongo_client(mongo_conn_id)
+    db = client[mongo_db_name]
+    discovered = {}
+
+    for collection_name in db.list_collection_names():
+        if collection_name.startswith("system."):
+            continue
+
+        safe_name = re.sub(r"[^A-Za-z0-9_]", "_", collection_name)
+        discovered[collection_name] = {
+            "table_name": f"RAW_{safe_name.upper()}",
+            "view_name": f"V_{safe_name.upper()}",
+            "fields": {},
+        }
+
+    return discovered
 
 
 @dag(
@@ -299,9 +327,15 @@ def mongodb_to_snowflake_etl():
 
     init_db = init_snowflake()
 
+    collection_plan = resolve_collection_plan(
+        mongo_conn_id="mongo_conn_id",
+        mongo_db_name=MONGO_DATABASE,
+        configured_mappings=SCHEMA_MAPPINGS,
+    )
+
     # Create task groups for clear visualization in Airflow UI
     with TaskGroup("load_collections") as load_group:
-        for collection, mapping in SCHEMA_MAPPINGS.items():
+        for collection, mapping in collection_plan.items():
             create_collection_tasks(collection, mapping)
 
     init_db >> load_group
