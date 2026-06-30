@@ -23,8 +23,11 @@ def resolve_uri_from_env(env_key: str):
     if raw.startswith("{") and raw.endswith("}"):
         try:
             data = json.loads(raw)
-            if isinstance(data, dict) and data.get("value"):
-                return data["value"]
+            if isinstance(data, dict):
+                if data.get("value"):
+                    return data["value"]
+                if data.get("isSecret"):
+                    return None
         except json.JSONDecodeError:
             pass
 
