@@ -73,43 +73,42 @@ def to_snake_case(camel_str):
 def get_mongo_client(mongo_conn_id):
     """Build a MongoDB client from the configured Airflow connection."""
     from pymongo import MongoClient
+    # Prefer explicit AIRFLOW_CONN_<CONN_ID> environment variable if set
+    env_key = f"AIRFLOW_CONN_{mongo_conn_id.upper()}"
+    env_uri = os.environ.get(env_key)
+    if env_uri:
+        # Env var should contain a full MongoDB URI (mongodb:// or mongodb+srv://)
+        return MongoClient(env_uri)
 
+    # Try to get the URI from the Airflow Connection object (preserves +srv)
     conn = BaseHook.get_connection(mongo_conn_id)
-    extra = conn.extra_dejson or {}
-
+    extra = getattr(conn, "extra_dejson", {}) or {}
     uri = extra.get("uri") or extra.get("connection_string")
 
-    if not uri:
-        if conn.host:
-            host = conn.host
-            if conn.port:
-                host = f"{host}:{conn.port}"
-            if conn.login and conn.password:
-                uri = f"mongodb://{conn.login}:{conn.password}@{host}"
-            elif conn.login:
-                uri = f"mongodb://{conn.login}@{host}"
-            else:
-                uri = f"mongodb://{host}"
+    # Some Airflow installations expose the original URI via Connection.get_uri()
+    try:
+        conn_uri = conn.get_uri()
+    except Exception:
+        conn_uri = None
 
-    if not uri:
-        raise ValueError(
-            f"Mongo connection '{mongo_conn_id}' is missing host/URI details"
-        )
+    if conn_uri and (conn_uri.startswith("mongodb://") or conn_uri.startswith("mongodb+srv://")):
+        return MongoClient(conn_uri)
 
-    if uri.startswith("mongodb://") or uri.startswith("mongodb+srv://"):
+    if uri and (uri.startswith("mongodb://") or uri.startswith("mongodb+srv://")):
         return MongoClient(uri)
 
+    # Fallback: construct a mongodb:// URI from host/login/port/schema if present
     if conn.host:
         host = conn.host
         if conn.port:
             host = f"{host}:{conn.port}"
         if conn.login and conn.password:
-            return MongoClient(f"mongodb://{conn.login}:{conn.password}@{host}")
+            return MongoClient(f"mongodb://{conn.login}:{conn.password}@{host}/{conn.schema or ''}")
         if conn.login:
-            return MongoClient(f"mongodb://{conn.login}@{host}")
-        return MongoClient(f"mongodb://{host}")
+            return MongoClient(f"mongodb://{conn.login}@{host}/{conn.schema or ''}")
+        return MongoClient(f"mongodb://{host}/{conn.schema or ''}")
 
-    return MongoClient(uri)
+    raise ValueError(f"Mongo connection '{mongo_conn_id}' is missing host/URI details")
 
 
 def resolve_collection_plan(mongo_conn_id, mongo_db_name, configured_mappings):
