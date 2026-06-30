@@ -50,6 +50,8 @@ def test_mongo_connection():
         network and credential configuration from the runtime environment.
         """
         uri = resolve_uri_from_env("AIRFLOW_CONN_MONGO_CONN_ID")
+        if uri:
+            logger.info("Using Mongo URI from env var")
 
         if not uri:
             try:
@@ -57,6 +59,7 @@ def test_mongo_connection():
                 extras = getattr(conn, "extra_dejson", {}) or {}
                 uri = extras.get("uri") or extras.get("connection_string")
                 if not uri:
+                    logger.info("Using Mongo URI from Airflow connection fallback")
                     host = conn.host
                     port = conn.port
                     login = conn.login

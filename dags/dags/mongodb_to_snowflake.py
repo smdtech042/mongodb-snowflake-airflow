@@ -97,6 +97,7 @@ def get_mongo_client(mongo_conn_id):
     env_key = f"AIRFLOW_CONN_{mongo_conn_id.upper()}"
     env_uri = resolve_uri_from_env(env_key)
     if env_uri:
+        logger.info("Using Mongo URI from env var %s", env_key)
         # Env var should contain a full MongoDB URI (mongodb:// or mongodb+srv://)
         return MongoClient(env_uri)
 
@@ -112,9 +113,11 @@ def get_mongo_client(mongo_conn_id):
         conn_uri = None
 
     if conn_uri and (conn_uri.startswith("mongodb://") or conn_uri.startswith("mongodb+srv://")):
+        logger.info("Using Mongo URI from Airflow get_uri()")
         return MongoClient(conn_uri)
 
     if uri and (uri.startswith("mongodb://") or uri.startswith("mongodb+srv://")):
+        logger.info("Using Mongo URI from Airflow extras")
         return MongoClient(uri)
 
     # Fallback: construct a URI from host/login/port/schema if present.
