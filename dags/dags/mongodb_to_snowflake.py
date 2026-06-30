@@ -166,7 +166,11 @@ def mongodb_to_snowflake_etl():
             cursor = db[collection].find()
 
             temp_dir = tempfile.gettempdir()
-            filename = f"mongo_export_{collection}_{context['run_id']}.json"
+            # IMPORTANT: do NOT use run_id here — it contains ':' and '+' which
+            # are not valid in an unquoted Snowflake stage URI and cause
+            # COPY INTO to silently match zero files when ON_ERROR=CONTINUE.
+            safe_run_token = context["ts_nodash"]
+            filename = f"mongo_export_{collection}_{safe_run_token}.json"
             local_filepath = os.path.join(temp_dir, filename)
 
             record_count = 0
@@ -234,6 +238,7 @@ def mongodb_to_snowflake_etl():
 
             # 5. COPY INTO Temp Table
             logger.info(f"Loading staged files into temp table {temp_table}...")
+            staged_file = f"{filename}.gz"
             copy_sql = f"""
             COPY INTO {database}.{schema}.{temp_table} (_MONGO_ID, DATA, INGESTED_AT)
             FROM (
@@ -241,12 +246,16 @@ def mongodb_to_snowflake_etl():
                     $1:_id::VARCHAR,
                     $1,
                     CURRENT_TIMESTAMP()
-                FROM @{database}.{schema}.mongodb_stage/{filename}.gz
+                FROM @{database}.{schema}.mongodb_stage
             )
+            FILES = ('{staged_file}')
             FILE_FORMAT = (TYPE = 'JSON')
-            ON_ERROR = 'CONTINUE';
+            ON_ERROR = 'ABORT_STATEMENT';
             """
-            sf_hook.run(copy_sql, autocommit=True)
+            copy_results = sf_hook.run(
+                copy_sql, autocommit=True, handler=lambda c: c.fetchall()
+            )
+            logger.info(f"COPY INTO result for {staged_file}: {copy_results}")
 
             # 6. MERGE into target RAW Table
             logger.info(f"Merging temp table {temp_table} into raw table {table}...")
