@@ -70,12 +70,29 @@ def to_snake_case(camel_str):
     return snake
 
 
+def resolve_uri_from_env(env_key: str):
+    raw = os.environ.get(env_key)
+    if not raw:
+        return None
+
+    raw = raw.strip()
+    if raw.startswith("{") and raw.endswith("}"):
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict) and data.get("value"):
+                return data["value"]
+        except json.JSONDecodeError:
+            pass
+
+    return raw
+
+
 def get_mongo_client(mongo_conn_id):
     """Build a MongoDB client from the configured Airflow connection."""
     from pymongo import MongoClient
     # Prefer explicit AIRFLOW_CONN_<CONN_ID> environment variable if set
     env_key = f"AIRFLOW_CONN_{mongo_conn_id.upper()}"
-    env_uri = os.environ.get(env_key)
+    env_uri = resolve_uri_from_env(env_key)
     if env_uri:
         # Env var should contain a full MongoDB URI (mongodb:// or mongodb+srv://)
         return MongoClient(env_uri)
