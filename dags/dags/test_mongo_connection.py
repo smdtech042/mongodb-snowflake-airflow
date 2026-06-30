@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from datetime import datetime, timedelta
 
@@ -11,6 +12,23 @@ except Exception:  # pragma: no cover - runtime only
     MongoClient = None
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_uri_from_env(env_key: str):
+    raw = os.environ.get(env_key)
+    if not raw:
+        return None
+
+    raw = raw.strip()
+    if raw.startswith("{") and raw.endswith("}"):
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict) and data.get("value"):
+                return data["value"]
+        except json.JSONDecodeError:
+            pass
+
+    return raw
 
 
 @dag(
@@ -28,7 +46,7 @@ def test_mongo_connection():
         This task is intended to be deployed to Astronomer and run once to verify
         network and credential configuration from the runtime environment.
         """
-        uri = os.environ.get("AIRFLOW_CONN_MONGO_CONN_ID")
+        uri = resolve_uri_from_env("AIRFLOW_CONN_MONGO_CONN_ID")
 
         if not uri:
             try:
