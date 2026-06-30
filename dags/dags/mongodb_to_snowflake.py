@@ -181,178 +181,212 @@ def mongodb_to_snowflake_etl():
         for query in setup_queries:
             sf_hook.run(query, autocommit=True)
 
-    # Dynamic Task Group for processing each collection in parallel
-    def create_collection_tasks(collection_name, mapping):
-        raw_table = mapping["table_name"]
-        view_name = mapping["view_name"]
-        fields = mapping["fields"]
+    @task(task_id="discover_collections")
+    def discover_collections(**context):
+        """Discover collections at runtime and return a list of mapping dicts.
 
-        @task(task_id=f"elt_{collection_name}", multiple_outputs=True)
-        def run_collection_elt(
-            collection: str, table: str, view: str, fields_map: dict, **context
-        ):
-            params = context["params"]
-            mongo_conn = params["mongo_conn_id"]
-            sf_conn = params["snowflake_conn_id"]
-            database = params["snowflake_database"]
-            schema = params["snowflake_schema"]
-            mongo_db = params["mongo_db_name"]
-            batch_size = int(params["batch_size"])
+        Returns list of {collection, table_name, view_name, fields}.
+        """
+        params = context["params"]
+        mongo_conn = params["mongo_conn_id"]
+        mongo_db = params["mongo_db_name"]
 
-            # 1. Extract from MongoDB and write to local JSONL
-            logger.info(
-                f"Connecting to MongoDB and fetching from collection '{collection}'..."
-            )
-            client = get_mongo_client(mongo_conn)
-            db = client[mongo_db]
-            cursor = db[collection].find()
-
-            temp_dir = tempfile.gettempdir()
-            # IMPORTANT: do NOT use run_id here — it contains ':' and '+' which
-            # are not valid in an unquoted Snowflake stage URI and cause
-            # COPY INTO to silently match zero files when ON_ERROR=CONTINUE.
-            safe_run_token = context["ts_nodash"]
-            filename = f"mongo_export_{collection}_{safe_run_token}.json"
-            local_filepath = os.path.join(temp_dir, filename)
-
-            record_count = 0
-            logger.info(f"Writing records to temporary local file {local_filepath}...")
-            with open(local_filepath, "w", encoding="utf-8") as f:
-                batch = []
-                for doc in cursor:
-                    serialized = serialize_mongo_doc(doc)
-                    batch.append(json.dumps(serialized))
-                    record_count += 1
-
-                    if len(batch) >= batch_size:
-                        f.write("\n".join(batch) + "\n")
-                        batch = []
-
-                if batch:
-                    f.write("\n".join(batch) + "\n")
-
-            logger.info(f"Total extracted records: {record_count}")
-
-            if record_count == 0:
-                logger.info(
-                    f"No records found in collection '{collection}'. Skipping Snowflake load."
+        if SCHEMA_MAPPINGS:
+            plan = []
+            for collection, mapping in SCHEMA_MAPPINGS.items():
+                plan.append(
+                    {
+                        "collection": collection,
+                        "table_name": mapping["table_name"],
+                        "view_name": mapping["view_name"],
+                        "fields": mapping.get("fields", {}),
+                    }
                 )
-                if os.path.exists(local_filepath):
-                    os.remove(local_filepath)
-                return {"records_loaded": 0, "status": "SKIPPED_EMPTY"}
+            return plan
 
-            # 2. Setup Raw Table DDL
-            sf_hook = SnowflakeHook(snowflake_conn_id=sf_conn)
-            create_table_ddl = f"""
-            CREATE TABLE IF NOT EXISTS {database}.{schema}.{table} (
-                _MONGO_ID VARCHAR(128) PRIMARY KEY,
-                DATA VARIANT,
-                INGESTED_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP()
-            );
-            """
-            sf_hook.run(create_table_ddl, autocommit=True)
+        client = get_mongo_client(mongo_conn)
+        db = client[mongo_db]
+        plan = []
+        for collection_name in db.list_collection_names():
+            if collection_name.startswith("system."):
+                continue
 
-            # 3. Create Transient Staging table for Merge
-            temp_table = f"TEMP_{table}_{context['ds_nodash']}"
-            create_temp_table_ddl = f"""
-            CREATE OR REPLACE TEMPORARY TABLE {database}.{schema}.{temp_table} (
-                _MONGO_ID VARCHAR(128),
-                DATA VARIANT,
-                INGESTED_AT TIMESTAMP_TZ
-            );
-            """
-            sf_hook.run(create_temp_table_ddl, autocommit=True)
+            safe_name = re.sub(r"[^A-Za-z0-9_]", "_", collection_name)
+            plan.append(
+                {
+                    "collection": collection_name,
+                    "table_name": f"RAW_{safe_name.upper()}",
+                    "view_name": f"V_{safe_name.upper()}",
+                    "fields": {},
+                }
+            )
 
-            # 4. Upload to Snowflake Internal Stage (PUT)
+        return plan
+
+
+    @task(task_id="elt_collection", multiple_outputs=True)
+    def run_collection_elt(collection: str, table: str, view: str, fields_map: dict, **context):
+        params = context["params"]
+        mongo_conn = params["mongo_conn_id"]
+        sf_conn = params["snowflake_conn_id"]
+        database = params["snowflake_database"]
+        schema = params["snowflake_schema"]
+        mongo_db = params["mongo_db_name"]
+        batch_size = int(params["batch_size"])
+
+        # 1. Extract from MongoDB and write to local JSONL
+        logger.info(
+            f"Connecting to MongoDB and fetching from collection '{collection}'..."
+        )
+        client = get_mongo_client(mongo_conn)
+        db = client[mongo_db]
+        cursor = db[collection].find()
+
+        temp_dir = tempfile.gettempdir()
+        # IMPORTANT: do NOT use run_id here — it contains ':' and '+' which
+        # are not valid in an unquoted Snowflake stage URI and cause
+        # COPY INTO to silently match zero files when ON_ERROR=CONTINUE.
+        safe_run_token = context["ts_nodash"]
+        filename = f"mongo_export_{collection}_{safe_run_token}.json"
+        local_filepath = os.path.join(temp_dir, filename)
+
+        record_count = 0
+        logger.info(f"Writing records to temporary local file {local_filepath}...")
+        with open(local_filepath, "w", encoding="utf-8") as f:
+            batch = []
+            for doc in cursor:
+                serialized = serialize_mongo_doc(doc)
+                batch.append(json.dumps(serialized))
+                record_count += 1
+
+                if len(batch) >= batch_size:
+                    f.write("\n".join(batch) + "\n")
+                    batch = []
+
+            if batch:
+                f.write("\n".join(batch) + "\n")
+
+        logger.info(f"Total extracted records: {record_count}")
+
+        if record_count == 0:
             logger.info(
-                f"Uploading file to Snowflake stage: @{database}.{schema}.mongodb_stage..."
+                f"No records found in collection '{collection}'. Skipping Snowflake load."
             )
-            conn = sf_hook.get_conn()
-            sf_cursor = conn.cursor()
-            try:
-                # PUT requires clean UNIX style path separators
-                clean_path = local_filepath.replace(os.sep, "/")
-                put_sql = f"PUT 'file://{clean_path}' @{database}.{schema}.mongodb_stage AUTO_COMPRESS=TRUE OVERWRITE=TRUE"
-                sf_cursor.execute(put_sql)
-            finally:
-                sf_cursor.close()
-                conn.close()
-
-            # 5. COPY INTO Temp Table
-            logger.info(f"Loading staged files into temp table {temp_table}...")
-            staged_file = f"{filename}.gz"
-            copy_sql = f"""
-            COPY INTO {database}.{schema}.{temp_table} (_MONGO_ID, DATA, INGESTED_AT)
-            FROM (
-                SELECT
-                    $1:_id::VARCHAR,
-                    $1,
-                    CURRENT_TIMESTAMP()
-                FROM @{database}.{schema}.mongodb_stage
-            )
-            FILES = ('{staged_file}')
-            FILE_FORMAT = (TYPE = 'JSON')
-            ON_ERROR = 'ABORT_STATEMENT';
-            """
-            copy_results = sf_hook.run(
-                copy_sql, autocommit=True, handler=lambda c: c.fetchall()
-            )
-            logger.info(f"COPY INTO result for {staged_file}: {copy_results}")
-
-            # 6. MERGE into target RAW Table
-            logger.info(f"Merging temp table {temp_table} into raw table {table}...")
-            merge_sql = f"""
-            MERGE INTO {database}.{schema}.{table} AS target
-            USING {database}.{schema}.{temp_table} AS src
-            ON target._MONGO_ID = src._MONGO_ID
-            WHEN MATCHED THEN
-                UPDATE SET target.DATA = src.DATA, target.INGESTED_AT = src.INGESTED_AT
-            WHEN NOT MATCHED THEN
-                INSERT (_MONGO_ID, DATA, INGESTED_AT)
-                VALUES (src._MONGO_ID, src.DATA, src.INGESTED_AT);
-            """
-            sf_hook.run(merge_sql, autocommit=True)
-
-            # 7. Create/Replace View representing Mongoose Schema fields
-            logger.info(f"Deploying view {view}...")
-            select_clauses = ["DATA:_id::VARCHAR AS MONGO_ID"]
-            for field, sql_type in fields_map.items():
-                col_name = to_snake_case(field)
-                select_clauses.append(f"DATA:{field}::{sql_type} AS {col_name}")
-
-            select_clauses.append("INGESTED_AT AS INGESTED_AT")
-
-            view_ddl = f"""
-            CREATE OR REPLACE VIEW {database}.{schema}.{view} AS
-            SELECT
-                {", ".join(select_clauses)}
-            FROM {database}.{schema}.{table};
-            """
-            sf_hook.run(view_ddl, autocommit=True)
-
-            # Cleanup Local Temp File
             if os.path.exists(local_filepath):
                 os.remove(local_filepath)
-                logger.info(f"Removed local temporary file {local_filepath}")
+            return {"records_loaded": 0, "status": "SKIPPED_EMPTY"}
 
-            return {"records_loaded": record_count, "status": "SUCCESS"}
+        # 2. Setup Raw Table DDL
+        sf_hook = SnowflakeHook(snowflake_conn_id=sf_conn)
+        create_table_ddl = f"""
+        CREATE TABLE IF NOT EXISTS {database}.{schema}.{table} (
+            _MONGO_ID VARCHAR(128) PRIMARY KEY,
+            DATA VARIANT,
+            INGESTED_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP()
+        );
+        """
+        sf_hook.run(create_table_ddl, autocommit=True)
 
-        return run_collection_elt(collection_name, raw_table, view_name, fields)
+        # 3. Create Transient Staging table for Merge
+        temp_table = f"TEMP_{table}_{context['ds_nodash']}"
+        create_temp_table_ddl = f"""
+        CREATE OR REPLACE TEMPORARY TABLE {database}.{schema}.{temp_table} (
+            _MONGO_ID VARCHAR(128),
+            DATA VARIANT,
+            INGESTED_AT TIMESTAMP_TZ
+        );
+        """
+        sf_hook.run(create_temp_table_ddl, autocommit=True)
+
+        # 4. Upload to Snowflake Internal Stage (PUT)
+        logger.info(
+            f"Uploading file to Snowflake stage: @{database}.{schema}.mongodb_stage..."
+        )
+        conn = sf_hook.get_conn()
+        sf_cursor = conn.cursor()
+        try:
+            # PUT requires clean UNIX style path separators
+            clean_path = local_filepath.replace(os.sep, "/")
+            put_sql = f"PUT 'file://{clean_path}' @{database}.{schema}.mongodb_stage AUTO_COMPRESS=TRUE OVERWRITE=TRUE"
+            sf_cursor.execute(put_sql)
+        finally:
+            sf_cursor.close()
+            conn.close()
+
+        # 5. COPY INTO Temp Table
+        logger.info(f"Loading staged files into temp table {temp_table}...")
+        staged_file = f"{filename}.gz"
+        copy_sql = f"""
+        COPY INTO {database}.{schema}.{temp_table} (_MONGO_ID, DATA, INGESTED_AT)
+        FROM (
+            SELECT
+                $1:_id::VARCHAR,
+                $1,
+                CURRENT_TIMESTAMP()
+            FROM @{database}.{schema}.mongodb_stage
+        )
+        FILES = ('{staged_file}')
+        FILE_FORMAT = (TYPE = 'JSON')
+        ON_ERROR = 'ABORT_STATEMENT';
+        """
+        copy_results = sf_hook.run(
+            copy_sql, autocommit=True, handler=lambda c: c.fetchall()
+        )
+        logger.info(f"COPY INTO result for {staged_file}: {copy_results}")
+
+        # 6. MERGE into target RAW Table
+        logger.info(f"Merging temp table {temp_table} into raw table {table}...")
+        merge_sql = f"""
+        MERGE INTO {database}.{schema}.{table} AS target
+        USING {database}.{schema}.{temp_table} AS src
+        ON target._MONGO_ID = src._MONGO_ID
+        WHEN MATCHED THEN
+            UPDATE SET target.DATA = src.DATA, target.INGESTED_AT = src.INGESTED_AT
+        WHEN NOT MATCHED THEN
+            INSERT (_MONGO_ID, DATA, INGESTED_AT)
+            VALUES (src._MONGO_ID, src.DATA, src.INGESTED_AT);
+        """
+        sf_hook.run(merge_sql, autocommit=True)
+
+        # 7. Create/Replace View representing Mongoose Schema fields
+        logger.info(f"Deploying view {view}...")
+        select_clauses = ["DATA:_id::VARCHAR AS MONGO_ID"]
+        for field, sql_type in fields_map.items():
+            col_name = to_snake_case(field)
+            select_clauses.append(f"DATA:{field}::{sql_type} AS {col_name}")
+
+        select_clauses.append("INGESTED_AT AS INGESTED_AT")
+
+        view_ddl = f"""
+        CREATE OR REPLACE VIEW {database}.{schema}.{view} AS
+        SELECT
+            {", ".join(select_clauses)}
+        FROM {database}.{schema}.{table};
+        """
+        sf_hook.run(view_ddl, autocommit=True)
+
+        # Cleanup Local Temp File
+        if os.path.exists(local_filepath):
+            os.remove(local_filepath)
+            logger.info(f"Removed local temporary file {local_filepath}")
+
+        return {"records_loaded": record_count, "status": "SUCCESS"}
 
     init_db = init_snowflake()
 
-    collection_plan = resolve_collection_plan(
-        mongo_conn_id="mongo_conn_id",
-        mongo_db_name=MONGO_DATABASE,
-        configured_mappings=SCHEMA_MAPPINGS,
+    discovered = discover_collections()
+
+    # Map the per-collection task across discovered collection plan
+    # Use XCom returned list from discover_collections; Airflow mapping will
+    # expand with the lists below.
+    mapped = run_collection_elt.expand(
+        collection=discovered.map(lambda x: x["collection"]),
+        table=discovered.map(lambda x: x["table_name"]),
+        view=discovered.map(lambda x: x["view_name"]),
+        fields_map=discovered.map(lambda x: x["fields"]),
     )
 
-    # Create task groups for clear visualization in Airflow UI
-    with TaskGroup("load_collections") as load_group:
-        for collection, mapping in collection_plan.items():
-            create_collection_tasks(collection, mapping)
-
-    init_db >> load_group
+    init_db >> discovered >> mapped
 
 
 # Define the DAG instantiation
