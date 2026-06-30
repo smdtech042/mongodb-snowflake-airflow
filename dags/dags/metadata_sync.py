@@ -40,7 +40,7 @@ default_args = {
     params={
         "mongo_conn_id": "mongo_conn_id",
         "snowflake_conn_id": "snowflake_conn_id",
-        "snowflake_database": "ORZOX_DB",
+        "snowflake_database": "ORAZOX_DB",
         "snowflake_schema": "PUBLIC",
         "mongo_db_name": MONGO_DATABASE,
     },
