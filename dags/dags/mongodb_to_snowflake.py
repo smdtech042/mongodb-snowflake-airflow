@@ -77,23 +77,37 @@ def get_mongo_client(mongo_conn_id):
     conn = BaseHook.get_connection(mongo_conn_id)
     extra = conn.extra_dejson or {}
 
-    if conn.host:
-        host = conn.host
-        if conn.port:
-            host = f"{host}:{conn.port}"
-        if conn.login and conn.password:
-            uri = f"mongodb://{conn.login}:{conn.password}@{host}"
-        elif conn.login:
-            uri = f"mongodb://{conn.login}@{host}"
-        else:
-            uri = f"mongodb://{host}"
-    else:
-        uri = extra.get("uri") or extra.get("connection_string")
+    uri = extra.get("uri") or extra.get("connection_string")
+
+    if not uri:
+        if conn.host:
+            host = conn.host
+            if conn.port:
+                host = f"{host}:{conn.port}"
+            if conn.login and conn.password:
+                uri = f"mongodb://{conn.login}:{conn.password}@{host}"
+            elif conn.login:
+                uri = f"mongodb://{conn.login}@{host}"
+            else:
+                uri = f"mongodb://{host}"
 
     if not uri:
         raise ValueError(
             f"Mongo connection '{mongo_conn_id}' is missing host/URI details"
         )
+
+    if uri.startswith("mongodb://") or uri.startswith("mongodb+srv://"):
+        return MongoClient(uri)
+
+    if conn.host:
+        host = conn.host
+        if conn.port:
+            host = f"{host}:{conn.port}"
+        if conn.login and conn.password:
+            return MongoClient(f"mongodb://{conn.login}:{conn.password}@{host}")
+        if conn.login:
+            return MongoClient(f"mongodb://{conn.login}@{host}")
+        return MongoClient(f"mongodb://{host}")
 
     return MongoClient(uri)
 
