@@ -65,12 +65,17 @@ def test_mongo_connection():
                     if host:
                         if port:
                             host = f"{host}:{port}"
-                        if login and password:
-                            uri = f"mongodb://{login}:{password}@{host}/{schema}"
-                        elif login:
-                            uri = f"mongodb://{login}@{host}/{schema}"
+                            scheme = "mongodb"
+                        elif ".mongodb.net" in host:
+                            scheme = "mongodb+srv"
                         else:
-                            uri = f"mongodb://{host}/{schema}"
+                            scheme = "mongodb"
+                        if login and password:
+                            uri = f"{scheme}://{login}:{password}@{host}/{schema}"
+                        elif login:
+                            uri = f"{scheme}://{login}@{host}/{schema}"
+                        else:
+                            uri = f"{scheme}://{host}/{schema}"
             except Exception as e:
                 logger.exception("Failed to read Airflow connection: %s", e)
                 raise

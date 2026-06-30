@@ -117,16 +117,25 @@ def get_mongo_client(mongo_conn_id):
     if uri and (uri.startswith("mongodb://") or uri.startswith("mongodb+srv://")):
         return MongoClient(uri)
 
-    # Fallback: construct a mongodb:// URI from host/login/port/schema if present
+    # Fallback: construct a URI from host/login/port/schema if present.
+    # Prefer Atlas SRV form when connecting to a mongodb.net cluster without a port.
     if conn.host:
         host = conn.host
         if conn.port:
             host = f"{host}:{conn.port}"
+            scheme = "mongodb"
+        elif ".mongodb.net" in conn.host:
+            scheme = "mongodb+srv"
+        else:
+            scheme = "mongodb"
+
+        auth = ""
         if conn.login and conn.password:
-            return MongoClient(f"mongodb://{conn.login}:{conn.password}@{host}/{conn.schema or ''}")
-        if conn.login:
-            return MongoClient(f"mongodb://{conn.login}@{host}/{conn.schema or ''}")
-        return MongoClient(f"mongodb://{host}/{conn.schema or ''}")
+            auth = f"{conn.login}:{conn.password}@"
+        elif conn.login:
+            auth = f"{conn.login}@"
+
+        return MongoClient(f"{scheme}://{auth}{host}/{conn.schema or ''}")
 
     raise ValueError(f"Mongo connection '{mongo_conn_id}' is missing host/URI details")
 
