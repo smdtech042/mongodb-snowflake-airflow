@@ -38,7 +38,7 @@ default_args = {
     tags=["cleanup", "maintenance", "snowflake"],
     params={
         "snowflake_conn_id": "snowflake_conn_id",
-        "snowflake_database": "MONGODB_RAW",
+        "snowflake_database": "ORZOX_DB",
         "snowflake_schema": "PUBLIC",
     },
 )
