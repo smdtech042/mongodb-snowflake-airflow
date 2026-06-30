@@ -129,7 +129,7 @@ def get_mongo_client(mongo_conn_id):
         else:
             scheme = "mongodb"
 
-        auth = ""
+        auth = "" 
         if conn.login and conn.password:
             auth = f"{conn.login}:{conn.password}@"
         elif conn.login:
